@@ -109,24 +109,12 @@
   },
   "mnemo": {
     "description": "Extended context/memory using Gemini's 1M token context cache. Load entire repos and query them.",
-    "command": "npx",
-    "args": [
-      "mcp-remote",
-      "https://mnemo.logosflux.io/mcp",
-      "--header", "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}",
-      "--header", "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}"
-    ],
-    "type": "stdio"
+    "type": "http",
+    "url": "https://mnemo.logosflux.io/mcp"
   },
   "nexus": {
-    "description": "Task and idea management system with AI planning, execution queues, and project tracking",
-    "command": "npx",
-    "args": [
-      "mcp-remote",
-      "https://nexus-mcp.solamp.workers.dev/mcp",
-      "--header", "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}",
-      "--header", "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}"
-    ],
-    "type": "stdio"
+    "description": "Task and idea management system. Capture ideas, break them into tasks, dispatch to executors (claude-ai, claude-code, human), track status and store decision logs.",
+    "type": "http",
+    "url": "https://nexus-mcp.solamp.workers.dev/mcp"
   }
 }
