@@ -1,0 +1,356 @@
+#!/bin/bash
+#
+# wrap-up - End-of-session script for project cleanup
+#
+# Usage: wrap-up [-pr <branch>] [-y] [--public|--private]
+#   -pr <branch>  Target branch for PR (default: main or master)
+#   -y            Skip confirmation prompts
+#   --public      Create public repo (if creating new)
+#   --private     Create private repo (if creating new)
+#
+# What it does:
+#   1. Initializes git repo if needed
+#   2. Creates GitHub repo if no remote exists
+#   3. Updates .env.example from current .env structure
+#   4. Commits all changes to current branch (or creates backup branch if on main/master)
+#   5. Pushes and creates PR
+#   6. Backs up sensitive files (.env, .dev.vars, credentials, etc.)
+#   7. Deletes local project folder (with confirmation)
+
+set -e
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Config
+BACKUP_DIR="$HOME/projects/.env-backups"
+DATE_STAMP=$(date +%Y-%m-%d)
+
+# Parse arguments
+PR_TARGET=""
+SKIP_CONFIRM=false
+REPO_VISIBILITY=""
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -pr)
+            PR_TARGET="$2"
+            shift 2
+            ;;
+        -y)
+            SKIP_CONFIRM=true
+            shift
+            ;;
+        --public)
+            REPO_VISIBILITY="public"
+            shift
+            ;;
+        --private)
+            REPO_VISIBILITY="private"
+            shift
+            ;;
+        *)
+            echo -e "${RED}Unknown option: $1${NC}"
+            echo "Usage: wrap-up [-pr <branch>] [-y] [--public|--private]"
+            exit 1
+            ;;
+    esac
+done
+
+# Get current directory info
+PROJECT_ROOT=$(pwd)
+PROJECT_NAME=$(basename "$PROJECT_ROOT")
+
+echo -e "${BLUE}=== wrap-up: $PROJECT_NAME ===${NC}"
+
+# Step 0: Ensure git repository exists
+echo -e "\n${BLUE}Step 0: Checking git repository${NC}"
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+    echo -e "${YELLOW}Not a git repository.${NC}"
+
+    if [ "$SKIP_CONFIRM" = true ]; then
+        INIT_GIT="y"
+    else
+        read -p "Initialize git repository? (Y/n): " INIT_GIT
+        INIT_GIT=${INIT_GIT:-y}
+    fi
+
+    if [[ "$INIT_GIT" =~ ^[Yy]$ ]]; then
+        git init
+        echo -e "${GREEN}Initialized git repository${NC}"
+    else
+        echo -e "${RED}Cannot proceed without git repository${NC}"
+        exit 1
+    fi
+fi
+
+# Update PROJECT_ROOT to git root (in case we're in a subdirectory)
+PROJECT_ROOT=$(git rev-parse --show-toplevel)
+PROJECT_NAME=$(basename "$PROJECT_ROOT")
+
+# Check for remote
+echo -e "\n${BLUE}Step 1: Checking remote repository${NC}"
+
+HAS_REMOTE=false
+if git remote get-url origin > /dev/null 2>&1; then
+    HAS_REMOTE=true
+    REMOTE_URL=$(git remote get-url origin)
+    echo -e "${GREEN}Remote found:${NC} $REMOTE_URL"
+else
+    echo -e "${YELLOW}No remote repository configured.${NC}"
+
+    # Check if gh CLI is available
+    if ! command -v gh &> /dev/null; then
+        echo -e "${RED}GitHub CLI (gh) not found. Install it to create repos automatically.${NC}"
+        echo -e "Visit: https://cli.github.com/"
+        exit 1
+    fi
+
+    # Prompt to create repo
+    if [ "$SKIP_CONFIRM" = true ]; then
+        CREATE_REPO="y"
+    else
+        read -p "Create GitHub repository for '$PROJECT_NAME'? (Y/n): " CREATE_REPO
+        CREATE_REPO=${CREATE_REPO:-y}
+    fi
+
+    if [[ "$CREATE_REPO" =~ ^[Yy]$ ]]; then
+        # Determine visibility
+        if [ -z "$REPO_VISIBILITY" ]; then
+            if [ "$SKIP_CONFIRM" = true ]; then
+                REPO_VISIBILITY="private"
+            else
+                echo -e "Repository visibility:"
+                echo -e "  1) ${GREEN}Public${NC} - Anyone can see"
+                echo -e "  2) ${YELLOW}Private${NC} - Only you can see"
+                read -p "Choose (1/2) [2]: " VIS_CHOICE
+                VIS_CHOICE=${VIS_CHOICE:-2}
+
+                if [ "$VIS_CHOICE" = "1" ]; then
+                    REPO_VISIBILITY="public"
+                else
+                    REPO_VISIBILITY="private"
+                fi
+            fi
+        fi
+
+        echo -e "${BLUE}Creating $REPO_VISIBILITY GitHub repository...${NC}"
+
+        if [ "$REPO_VISIBILITY" = "public" ]; then
+            gh repo create "$PROJECT_NAME" --public --source=. --remote=origin 2>&1
+        else
+            gh repo create "$PROJECT_NAME" --private --source=. --remote=origin 2>&1
+        fi
+
+        if [ $? -eq 0 ]; then
+            HAS_REMOTE=true
+            REMOTE_URL=$(git remote get-url origin)
+            echo -e "${GREEN}Created repository:${NC} $REMOTE_URL"
+        else
+            echo -e "${RED}Failed to create repository${NC}"
+            exit 1
+        fi
+    else
+        echo -e "${RED}Cannot proceed without remote repository${NC}"
+        exit 1
+    fi
+fi
+
+# Get branch info
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "master")
+echo -e "Current branch: ${YELLOW}$CURRENT_BRANCH${NC}"
+
+# Detect default branch if PR_TARGET not specified
+if [ -z "$PR_TARGET" ]; then
+    # Try to detect default branch from remote
+    PR_TARGET=$(git remote show origin 2>/dev/null | grep "HEAD branch" | cut -d: -f2 | tr -d ' ' || echo "")
+    if [ -z "$PR_TARGET" ]; then
+        PR_TARGET="main"
+    fi
+fi
+
+echo -e "PR target: ${YELLOW}$PR_TARGET${NC}"
+
+# Check if we need to create a new branch
+PROTECTED_BRANCHES=("main" "master" "HEAD")
+NEED_NEW_BRANCH=false
+
+for protected in "${PROTECTED_BRANCHES[@]}"; do
+    if [ "$CURRENT_BRANCH" = "$protected" ]; then
+        NEED_NEW_BRANCH=true
+        break
+    fi
+done
+
+# Create backup branch if on protected branch
+if [ "$NEED_NEW_BRANCH" = true ]; then
+    NEW_BRANCH="backup/${DATE_STAMP}"
+    echo -e "${YELLOW}On protected branch, creating: $NEW_BRANCH${NC}"
+    git checkout -b "$NEW_BRANCH"
+    CURRENT_BRANCH="$NEW_BRANCH"
+fi
+
+# Function to update .env.example from .env
+update_env_example() {
+    local env_file="$1"
+    local example_file="${env_file}.example"
+
+    if [ -f "$env_file" ]; then
+        echo -e "${BLUE}Updating $example_file from $env_file${NC}"
+        # Extract keys and create example with empty/placeholder values
+        while IFS='=' read -r key value || [ -n "$key" ]; do
+            # Skip comments and empty lines
+            [[ "$key" =~ ^#.*$ ]] && echo "$key" >> "${example_file}.tmp" && continue
+            [[ -z "$key" ]] && echo "" >> "${example_file}.tmp" && continue
+            # Write key with placeholder
+            echo "${key}=your_${key,,}_here" >> "${example_file}.tmp"
+        done < "$env_file"
+
+        if [ -f "${example_file}.tmp" ]; then
+            mv "${example_file}.tmp" "$example_file"
+            git add "$example_file" 2>/dev/null || true
+        fi
+    fi
+}
+
+# Find and update all .env.example files
+echo -e "\n${BLUE}Step 2: Updating .env.example files${NC}"
+find "$PROJECT_ROOT" -name ".env" -not -path "*/node_modules/*" -not -path "*/.git/*" | while read -r env_file; do
+    update_env_example "$env_file"
+done
+
+# Stage all changes
+echo -e "\n${BLUE}Step 3: Staging changes${NC}"
+git add -A
+
+# Check if there are changes to commit
+if git diff --cached --quiet; then
+    echo -e "${YELLOW}No changes to commit${NC}"
+else
+    # Show what will be committed
+    echo -e "${GREEN}Changes to commit:${NC}"
+    git diff --cached --stat
+
+    # Commit
+    COMMIT_MSG="wrap-up: Local changes backup ${DATE_STAMP}
+
+Automated backup before cleanup.
+
+$(git diff --cached --stat | tail -1)"
+
+    git commit -m "$COMMIT_MSG"
+    echo -e "${GREEN}Committed changes${NC}"
+fi
+
+# Push to remote
+echo -e "\n${BLUE}Step 4: Pushing to remote${NC}"
+git push -u origin "$CURRENT_BRANCH" 2>&1 || {
+    echo -e "${RED}Push failed. You may need to resolve conflicts manually.${NC}"
+    exit 1
+}
+
+# Create PR if not already on target branch
+echo -e "\n${BLUE}Step 5: Creating Pull Request${NC}"
+if [ "$CURRENT_BRANCH" != "$PR_TARGET" ]; then
+    # Check if PR already exists
+    EXISTING_PR=$(gh pr list --head "$CURRENT_BRANCH" --json number --jq '.[0].number' 2>/dev/null || echo "")
+
+    if [ -n "$EXISTING_PR" ]; then
+        echo -e "${YELLOW}PR #$EXISTING_PR already exists${NC}"
+        PR_URL=$(gh pr view "$EXISTING_PR" --json url --jq '.url')
+    else
+        PR_URL=$(gh pr create \
+            --base "$PR_TARGET" \
+            --head "$CURRENT_BRANCH" \
+            --title "wrap-up: $PROJECT_NAME backup ${DATE_STAMP}" \
+            --body "$(cat <<EOF
+## Automated Backup
+
+Local changes backed up via \`wrap-up\` script.
+
+### Changes
+$(git log "$PR_TARGET..$CURRENT_BRANCH" --oneline 2>/dev/null || echo "New commits")
+
+---
+*Generated by wrap-up script*
+EOF
+)" 2>&1) || {
+            echo -e "${YELLOW}Could not create PR (may already exist or no changes)${NC}"
+        }
+    fi
+
+    if [ -n "$PR_URL" ]; then
+        echo -e "${GREEN}PR: $PR_URL${NC}"
+    fi
+else
+    echo -e "${YELLOW}Already on $PR_TARGET, skipping PR creation${NC}"
+fi
+
+# Backup sensitive files
+echo -e "\n${BLUE}Step 6: Backing up sensitive files${NC}"
+mkdir -p "$BACKUP_DIR"
+
+# Files/patterns to backup
+BACKUP_PATTERNS=(
+    ".env"
+    ".env.*"
+    ".dev.vars"
+    "*.pem"
+    "*.key"
+    "credentials.json"
+    "service-account*.json"
+    ".wrangler/state"
+)
+
+BACKED_UP=()
+
+for pattern in "${BACKUP_PATTERNS[@]}"; do
+    find "$PROJECT_ROOT" -name "$pattern" -not -path "*/node_modules/*" -not -path "*/.git/*" 2>/dev/null | while read -r file; do
+        if [ -f "$file" ]; then
+            # Create backup filename: project__relative-path__date
+            REL_PATH="${file#$PROJECT_ROOT/}"
+            SAFE_PATH=$(echo "$REL_PATH" | tr '/' '_')
+            BACKUP_NAME="${PROJECT_NAME}__${SAFE_PATH}__${DATE_STAMP}"
+
+            cp "$file" "$BACKUP_DIR/$BACKUP_NAME"
+            chmod 600 "$BACKUP_DIR/$BACKUP_NAME"
+            echo -e "  ${GREEN}Backed up:${NC} $REL_PATH"
+            BACKED_UP+=("$REL_PATH")
+        fi
+    done
+done
+
+# Also backup .wrangler directory if it exists
+if [ -d "$PROJECT_ROOT/.wrangler" ]; then
+    WRANGLER_BACKUP="$BACKUP_DIR/${PROJECT_NAME}__.wrangler__${DATE_STAMP}.tar.gz"
+    tar -czf "$WRANGLER_BACKUP" -C "$PROJECT_ROOT" .wrangler 2>/dev/null && \
+        echo -e "  ${GREEN}Backed up:${NC} .wrangler/ (compressed)"
+fi
+
+echo -e "${GREEN}Backups saved to: $BACKUP_DIR${NC}"
+
+# Delete local folder
+echo -e "\n${BLUE}Step 7: Cleanup${NC}"
+
+if [ "$SKIP_CONFIRM" = true ]; then
+    CONFIRM="y"
+else
+    echo -e "${YELLOW}Delete local project folder?${NC}"
+    echo -e "  Path: $PROJECT_ROOT"
+    read -p "Confirm (y/N): " CONFIRM
+fi
+
+if [[ "$CONFIRM" =~ ^[Yy]$ ]]; then
+    cd "$HOME"
+    rm -rf "$PROJECT_ROOT"
+    echo -e "${GREEN}Deleted: $PROJECT_ROOT${NC}"
+    echo -e "\n${GREEN}=== wrap-up complete ===${NC}"
+else
+    echo -e "${YELLOW}Skipped deletion. Project folder preserved.${NC}"
+    echo -e "\n${GREEN}=== wrap-up complete ===${NC}"
+fi

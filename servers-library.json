@@ -116,5 +116,14 @@
     "description": "Task and idea management system. Capture ideas, break them into tasks, dispatch to executors (claude-ai, claude-code, human), track status and store decision logs.",
     "type": "http",
     "url": "https://nexus-mcp.solamp.workers.dev/mcp"
+  },
+  "stripe": {
+    "description": "Stripe payments API. Query charges, invoices, customers, subscriptions, and more.",
+    "command": "npx",
+    "args": ["-y", "@stripe/mcp", "--tools=all"],
+    "env": {
+      "STRIPE_SECRET_KEY": "${STRIPE_SECRET_KEY}"
+    },
+    "type": "stdio"
   }
 }

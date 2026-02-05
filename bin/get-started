@@ -1,0 +1,271 @@
+#!/bin/bash
+#
+# get-started - Clone and setup a project with secrets restoration
+#
+# Usage: get-started <git-url>
+#   git-url: SSH or HTTPS URL (e.g., git@github.com:User/repo.git)
+#
+# What it does:
+#   1. Clones repo to ~/projects/
+#   2. Restores backed up .env files if found
+#   3. Checks CF secrets against .env.example
+#   4. Warns about stale local values vs CF secrets
+#   5. CDs into the project folder
+
+set -e
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# Config
+PROJECTS_DIR="$HOME/projects"
+BACKUP_DIR="$PROJECTS_DIR/.env-backups"
+
+# Check arguments
+if [ -z "$1" ]; then
+    echo -e "${RED}Usage: get-started <git-url>${NC}"
+    echo "Example: get-started git@github.com:CyberBrown/my-project.git"
+    exit 1
+fi
+
+GIT_URL="$1"
+
+# Extract project name from URL
+PROJECT_NAME=$(basename "$GIT_URL" .git)
+
+echo -e "${BLUE}=== get-started: $PROJECT_NAME ===${NC}"
+
+# Create projects directory if needed
+mkdir -p "$PROJECTS_DIR"
+
+# Check if project already exists
+if [ -d "$PROJECTS_DIR/$PROJECT_NAME" ]; then
+    echo -e "${YELLOW}Project already exists at $PROJECTS_DIR/$PROJECT_NAME${NC}"
+    read -p "Remove and re-clone? (y/N): " CONFIRM
+    if [[ "$CONFIRM" =~ ^[Yy]$ ]]; then
+        rm -rf "$PROJECTS_DIR/$PROJECT_NAME"
+    else
+        echo -e "${BLUE}Entering existing project...${NC}"
+        cd "$PROJECTS_DIR/$PROJECT_NAME"
+        exec $SHELL
+    fi
+fi
+
+# Clone repository
+echo -e "\n${BLUE}Step 1: Cloning repository${NC}"
+cd "$PROJECTS_DIR"
+git clone "$GIT_URL"
+cd "$PROJECT_NAME"
+
+PROJECT_ROOT="$PROJECTS_DIR/$PROJECT_NAME"
+echo -e "${GREEN}Cloned to: $PROJECT_ROOT${NC}"
+
+# Restore backed up .env files
+echo -e "\n${BLUE}Step 2: Checking for backed up .env files${NC}"
+
+if [ -d "$BACKUP_DIR" ]; then
+    # Find backups for this project (sorted by date, newest first)
+    BACKUPS=$(ls -1 "$BACKUP_DIR" 2>/dev/null | grep "^${PROJECT_NAME}__" | sort -r)
+
+    if [ -n "$BACKUPS" ]; then
+        echo -e "${GREEN}Found backups:${NC}"
+
+        # Group by original file path
+        declare -A LATEST_BACKUPS
+
+        for backup in $BACKUPS; do
+            # Parse backup name: project__path__date
+            # Extract the middle part (original relative path)
+            ORIGINAL_PATH=$(echo "$backup" | sed "s/^${PROJECT_NAME}__//" | sed 's/__[0-9-]*$//' | tr '_' '/')
+
+            # Only keep the latest backup for each file
+            if [ -z "${LATEST_BACKUPS[$ORIGINAL_PATH]}" ]; then
+                LATEST_BACKUPS[$ORIGINAL_PATH]="$backup"
+            fi
+        done
+
+        # Restore each file
+        for ORIGINAL_PATH in "${!LATEST_BACKUPS[@]}"; do
+            BACKUP_FILE="${LATEST_BACKUPS[$ORIGINAL_PATH]}"
+            TARGET_PATH="$PROJECT_ROOT/$ORIGINAL_PATH"
+            TARGET_DIR=$(dirname "$TARGET_PATH")
+
+            echo -e "  ${CYAN}$ORIGINAL_PATH${NC}"
+
+            # Check if target already exists
+            if [ -f "$TARGET_PATH" ]; then
+                echo -e "    ${YELLOW}Already exists, comparing...${NC}"
+                if diff -q "$BACKUP_DIR/$BACKUP_FILE" "$TARGET_PATH" > /dev/null 2>&1; then
+                    echo -e "    ${GREEN}Identical, skipping${NC}"
+                    continue
+                else
+                    echo -e "    ${YELLOW}Differs from backup${NC}"
+                    read -p "    Overwrite with backup? (y/N): " CONFIRM
+                    [[ ! "$CONFIRM" =~ ^[Yy]$ ]] && continue
+                fi
+            fi
+
+            # Handle .wrangler tar.gz backups
+            if [[ "$BACKUP_FILE" == *".tar.gz" ]]; then
+                echo -e "    ${BLUE}Extracting compressed backup...${NC}"
+                tar -xzf "$BACKUP_DIR/$BACKUP_FILE" -C "$PROJECT_ROOT"
+            else
+                mkdir -p "$TARGET_DIR"
+                cp "$BACKUP_DIR/$BACKUP_FILE" "$TARGET_PATH"
+                chmod 600 "$TARGET_PATH"
+            fi
+
+            echo -e "    ${GREEN}Restored${NC}"
+        done
+    else
+        echo -e "${YELLOW}No backups found for $PROJECT_NAME${NC}"
+    fi
+else
+    echo -e "${YELLOW}Backup directory not found: $BACKUP_DIR${NC}"
+fi
+
+# Check for .env.example files and CF secrets
+echo -e "\n${BLUE}Step 3: Checking Cloudflare secrets${NC}"
+
+# Find all wrangler.toml files to identify workers
+WRANGLER_FILES=$(find "$PROJECT_ROOT" -name "wrangler.toml" -o -name "wrangler.jsonc" 2>/dev/null | grep -v node_modules)
+
+if [ -n "$WRANGLER_FILES" ]; then
+    echo -e "${CYAN}Found Cloudflare Workers:${NC}"
+
+    for wrangler_file in $WRANGLER_FILES; do
+        WORKER_DIR=$(dirname "$wrangler_file")
+        WORKER_NAME=$(grep -E "^name\s*=" "$wrangler_file" 2>/dev/null | head -1 | sed 's/.*=\s*["\x27]\([^"\x27]*\)["\x27].*/\1/' || basename "$WORKER_DIR")
+
+        echo -e "\n  ${CYAN}Worker: $WORKER_NAME${NC}"
+        echo -e "  Config: $wrangler_file"
+
+        # Check for .env.example in this worker's directory
+        ENV_EXAMPLE="$WORKER_DIR/.env.example"
+        ENV_FILE="$WORKER_DIR/.env"
+
+        if [ -f "$ENV_EXAMPLE" ]; then
+            echo -e "  ${BLUE}Checking secrets against .env.example...${NC}"
+
+            # Extract required env vars from .env.example
+            REQUIRED_VARS=$(grep -E "^[A-Z_]+=" "$ENV_EXAMPLE" 2>/dev/null | cut -d= -f1 || true)
+
+            if [ -n "$REQUIRED_VARS" ]; then
+                # Try to get secrets from Cloudflare
+                echo -e "  ${BLUE}Fetching CF secrets for $WORKER_NAME...${NC}"
+
+                CF_SECRETS=$(wrangler secret list --name "$WORKER_NAME" 2>/dev/null | grep -E "^\s*-\s*" | sed 's/.*-\s*//' || true)
+
+                if [ -n "$CF_SECRETS" ]; then
+                    echo -e "  ${GREEN}CF secrets found:${NC}"
+
+                    # Compare with required vars
+                    MISSING=()
+                    FOUND=()
+
+                    for var in $REQUIRED_VARS; do
+                        if echo "$CF_SECRETS" | grep -q "^${var}$"; then
+                            FOUND+=("$var")
+                            echo -e "    ${GREEN}$var${NC}"
+                        else
+                            MISSING+=("$var")
+                            echo -e "    ${YELLOW}$var (not in CF secrets)${NC}"
+                        fi
+                    done
+
+                    if [ ${#MISSING[@]} -gt 0 ]; then
+                        echo -e "\n  ${YELLOW}Missing secrets need to be set:${NC}"
+                        for var in "${MISSING[@]}"; do
+                            echo -e "    wrangler secret put $var --name $WORKER_NAME"
+                        done
+                    fi
+                else
+                    echo -e "  ${YELLOW}Could not fetch CF secrets (may need to run: wrangler login)${NC}"
+                fi
+
+                # Create .env from .env.example if it doesn't exist
+                if [ ! -f "$ENV_FILE" ]; then
+                    echo -e "\n  ${BLUE}Creating .env from .env.example${NC}"
+                    cp "$ENV_EXAMPLE" "$ENV_FILE"
+                    chmod 600 "$ENV_FILE"
+                    echo -e "  ${YELLOW}Please update $ENV_FILE with actual values${NC}"
+                fi
+            fi
+        else
+            echo -e "  ${YELLOW}No .env.example found${NC}"
+        fi
+    done
+else
+    # No wrangler files, check root .env.example
+    if [ -f "$PROJECT_ROOT/.env.example" ]; then
+        echo -e "${CYAN}Found .env.example in project root${NC}"
+
+        if [ ! -f "$PROJECT_ROOT/.env" ]; then
+            echo -e "${BLUE}Creating .env from .env.example${NC}"
+            cp "$PROJECT_ROOT/.env.example" "$PROJECT_ROOT/.env"
+            chmod 600 "$PROJECT_ROOT/.env"
+            echo -e "${YELLOW}Please update .env with actual values${NC}"
+        fi
+    else
+        echo -e "${YELLOW}No Cloudflare workers or .env.example found${NC}"
+    fi
+fi
+
+# Check for stale .env values
+echo -e "\n${BLUE}Step 4: Checking for stale values${NC}"
+
+find "$PROJECT_ROOT" -name ".env" -not -path "*/node_modules/*" 2>/dev/null | while read -r env_file; do
+    REL_PATH="${env_file#$PROJECT_ROOT/}"
+    echo -e "${CYAN}Checking: $REL_PATH${NC}"
+
+    # Look for common placeholder patterns that indicate unconfigured values
+    STALE_PATTERNS=(
+        "your_.*_here"
+        "CHANGEME"
+        "TODO"
+        "xxx"
+        "REPLACE_"
+        "sk-ant-.*AAA$"  # Truncated/example API keys
+    )
+
+    STALE_FOUND=false
+    for pattern in "${STALE_PATTERNS[@]}"; do
+        MATCHES=$(grep -E "$pattern" "$env_file" 2>/dev/null || true)
+        if [ -n "$MATCHES" ]; then
+            if [ "$STALE_FOUND" = false ]; then
+                echo -e "  ${YELLOW}Potentially stale values:${NC}"
+                STALE_FOUND=true
+            fi
+            echo "$MATCHES" | while read -r line; do
+                KEY=$(echo "$line" | cut -d= -f1)
+                echo -e "    ${YELLOW}$KEY${NC}"
+            done
+        fi
+    done
+
+    if [ "$STALE_FOUND" = false ]; then
+        echo -e "  ${GREEN}Looks good${NC}"
+    fi
+done
+
+# Summary
+echo -e "\n${GREEN}=== get-started complete ===${NC}"
+echo -e "Project: ${CYAN}$PROJECT_ROOT${NC}"
+echo -e "\nNext steps:"
+echo -e "  1. Review and update any .env files"
+echo -e "  2. Run: ${CYAN}npm install${NC} or ${CYAN}bun install${NC}"
+echo -e "  3. Start developing!"
+
+# Start a new shell in the project directory
+echo -e "\n${BLUE}Entering project directory...${NC}"
+cd "$PROJECT_ROOT"
+
+# Set terminal title and random theme (if rterm is available)
+command -v rterm &> /dev/null && rterm "$PROJECT_NAME"
+
+exec $SHELL

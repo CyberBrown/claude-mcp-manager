@@ -1,0 +1,54 @@
+#!/bin/bash
+#
+# rterm - Rename terminal and apply random theme (kitty only)
+#
+
+if [ -z "$1" ]; then
+    echo "Usage: rterm <title>"
+    exit 1
+fi
+
+# Check if kitty is available
+if ! command -v kitty &> /dev/null; then
+    echo "rterm requires kitty terminal"
+    exit 0
+fi
+
+kitty @ set-window-title "$1"
+
+theme=$(find ~/.cache/kitty/themes -name "*.conf" 2>/dev/null | grep -viE '(light|_day|Day\.|Dayfox)' | shuf -n 1)
+
+# Colors
+BRIGHT_MAGENTA='\e[95m'
+MAGENTA='\e[35m'
+CYAN='\e[36m'
+BRIGHT_CYAN='\e[96m'
+DIM='\e[2m'
+RESET='\e[0m'
+
+echo ""
+echo -e "${BRIGHT_MAGENTA}        ██╗      ██████╗  ██████╗  ██████╗ ███████╗${RESET}"
+echo -e "${BRIGHT_MAGENTA}        ██║     ██╔═══██╗██╔════╝ ██╔═══██╗██╔════╝${RESET}"
+echo -e "${MAGENTA}        ██║     ██║   ██║██║  ███╗██║   ██║███████╗${RESET}"
+echo -e "${MAGENTA}        ██║     ██║   ██║██║   ██║██║   ██║╚════██║${RESET}"
+echo -e "${MAGENTA}        ███████╗╚██████╔╝╚██████╔╝╚██████╔╝███████║${RESET}"
+echo -e "${MAGENTA}        ╚══════╝ ╚═════╝  ╚═════╝  ╚═════╝ ╚══════╝${RESET}"
+echo ""
+echo -e "${BRIGHT_CYAN}                ███████╗██╗     ██╗   ██╗██╗  ██╗${RESET}"
+echo -e "${BRIGHT_CYAN}                ██╔════╝██║     ██║   ██║╚██╗██╔╝${RESET}"
+echo -e "${CYAN}                █████╗  ██║     ██║   ██║ ╚███╔╝ ${RESET}"
+echo -e "${CYAN}                ██╔══╝  ██║     ██║   ██║ ██╔██╗ ${RESET}"
+echo -e "${CYAN}                ██║     ███████╗╚██████╔╝██╔╝ ██╗${RESET}"
+echo -e "${CYAN}                ╚═╝     ╚══════╝ ╚═════╝ ╚═╝  ╚═╝${RESET}"
+echo ""
+echo -e "${DIM}                           Φ⥁○⧖∵${RESET}"
+echo ""
+
+if [[ -n "$theme" ]]; then
+    kitty @ set-colors -a "$theme"
+    echo -e "${DIM}              $1 | $(basename "$theme" .conf)${RESET}"
+else
+    echo -e "${DIM}              $1${RESET}"
+    echo "No themes cached. Run 'kitty +kitten themes' first to download them."
+fi
+echo ""

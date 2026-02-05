@@ -1,12 +1,14 @@
 #!/bin/bash
 
-# Claude MCP Manager Installation Script
+# Claude MCP Manager + Dev Tools Installation Script
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="$HOME/mcp-management"
+BIN_DIR="$HOME/.local/bin"
 BASHRC="$HOME/.bashrc"
 
-echo "Installing Claude MCP Manager..."
+echo "Installing Claude MCP Manager + Dev Tools..."
 echo ""
 
 # Check if jq is installed
@@ -17,18 +19,17 @@ if ! command -v jq &> /dev/null; then
     exit 1
 fi
 
-# Create the installation directory with correct spelling
-echo "Creating directory: $INSTALL_DIR"
+# Create directories
+echo "Creating directories..."
 mkdir -p "$INSTALL_DIR"
+mkdir -p "$BIN_DIR"
 
-# Copy files to installation directory
-echo "Copying files..."
-cp mcp-manager.sh "$INSTALL_DIR/"
-cp servers-library.json "$INSTALL_DIR/"
-cp .example.env "$INSTALL_DIR/"
-cp commands.md "$INSTALL_DIR/"
-
-# Make the script executable
+# Copy MCP manager files
+echo "Installing MCP manager..."
+cp "$SCRIPT_DIR/mcp-manager.sh" "$INSTALL_DIR/"
+cp "$SCRIPT_DIR/servers-library.json" "$INSTALL_DIR/"
+cp "$SCRIPT_DIR/.example.env" "$INSTALL_DIR/"
+cp "$SCRIPT_DIR/commands.md" "$INSTALL_DIR/"
 chmod +x "$INSTALL_DIR/mcp-manager.sh"
 
 # Create .env file if it doesn't exist
@@ -38,36 +39,50 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
     echo "NOTE: Please edit $INSTALL_DIR/.env and add your API keys"
 fi
 
+# Install utility scripts to ~/.local/bin
+echo "Installing utility scripts..."
+for script in "$SCRIPT_DIR/bin/"*; do
+    if [ -f "$script" ]; then
+        name=$(basename "$script")
+        cp "$script" "$BIN_DIR/$name"
+        chmod +x "$BIN_DIR/$name"
+        echo "  Installed: $name"
+    fi
+done
+
+# Install bash aliases
+echo "Installing bash aliases..."
+cp "$SCRIPT_DIR/bash_aliases" "$HOME/.bash_aliases"
+echo "  Installed: ~/.bash_aliases"
+
 # Check if bashrc already has the configuration
 if grep -q "mcp-management" "$BASHRC" 2>/dev/null; then
     echo ""
     echo "WARNING: Found existing mcp-management configuration in $BASHRC"
-    echo "Please check your $BASHRC file and remove any duplicate or malformed entries."
+    echo "Skipping bashrc modification (already configured)."
+else
     echo ""
-    echo "The correct entries should be:"
-    echo '  export PATH="$HOME/mcp-management:$PATH"'
-    echo '  alias mcp-manager="$HOME/mcp-management/mcp-manager.sh"'
-    echo ""
-    read -p "Do you want to continue and add the configuration anyway? (y/N) " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo "Installation aborted. Files have been copied to $INSTALL_DIR"
-        exit 0
-    fi
+    echo "Adding configuration to $BASHRC..."
+    cat >> "$BASHRC" << 'EOF'
+
+# Claude MCP Manager + Dev Tools
+export PATH="$HOME/.local/bin:$HOME/mcp-management:$PATH"
+alias mcp-manager="$HOME/mcp-management/mcp-manager.sh"
+[ -f "$HOME/.bash_aliases" ] && . "$HOME/.bash_aliases"
+EOF
 fi
 
-# Add to bashrc
 echo ""
-echo "Adding configuration to $BASHRC..."
-cat >> "$BASHRC" << 'EOF'
-
-# Claude MCP Manager
-export PATH="$HOME/mcp-management:$PATH"
-alias mcp-manager="$HOME/mcp-management/mcp-manager.sh"
-EOF
-
+echo "Installation complete!"
 echo ""
-echo "✓ Installation complete!"
+echo "Installed:"
+echo "  - mcp-manager  (MCP server management)"
+echo "  - get-started   (project clone + secrets restore)"
+echo "  - wrap-up       (commit, push, PR, backup, cleanup)"
+echo "  - spark         (SSH to DGX Spark)"
+echo "  - rterm         (kitty terminal theming)"
+echo "  - yolo          (claude --dangerously-skip-permissions)"
+echo "  - bash aliases  (git shortcuts, safety, cloudflare)"
 echo ""
 echo "Next steps:"
 echo "  1. Edit $INSTALL_DIR/.env and add your API keys"

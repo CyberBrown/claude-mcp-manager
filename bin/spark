@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Spark - Connect to DGX Spark
+
+# Check if we're on spark itself
+if [ "$(hostname)" = "spark" ]; then
+    echo "Already on spark!"
+    exit 0
+fi
+
+# Set kitty theme if available
+if command -v kitty &> /dev/null; then
+    kitty @ set-colors --match=recent:0 ~/.config/kitty/themes/Box.conf 2>/dev/null || true
+fi
+
+echo "🔥 Igniting Spark... Time to melt some GPUs! 🔥"
+echo ""
+
+# SSH to spark
+ssh spark
+
+# Revert kitty theme after disconnect
+if command -v kitty &> /dev/null; then
+    kitty @ set-colors --match=recent:0 ~/.config/kitty/current-theme.conf 2>/dev/null || true
+fi

@@ -1,186 +1,100 @@
-# ⚠️ ARCHIVED - Now Part of Chezmoi Dotfiles
+# Claude MCP Manager + Dev Tools
 
-> **This repo has been integrated into [chezmoi](https://www.chezmoi.io/) dotfile management.**
->
-> **New repo:** [CyberBrown/dotfiles](https://github.com/CyberBrown/dotfiles)
+A command-line toolkit for managing MCP (Model Context Protocol) servers for Claude CLI/Code, plus utility scripts for project lifecycle management.
 
-## Migration
+## What's Included
 
-MCP Manager is now installed automatically via chezmoi:
+### MCP Manager
+Instead of manually editing configuration files every time you want to change MCP servers, this tool provides simple commands to enable and disable servers from a reusable library.
 
-```bash
-sh -c "$(curl -fsLS get.chezmoi.io)" -- init --apply git@github.com:CyberBrown/dotfiles.git -b ~/.local/bin
-source ~/.bashrc
-```
+### Dev Tools (`bin/`)
+| Script | Description |
+|--------|-------------|
+| `get-started` | Clone a project, restore backed-up `.env` files, check Cloudflare secrets |
+| `wrap-up` | End-of-session: commit, push, create PR, backup secrets, cleanup |
+| `spark` | SSH to DGX Spark (with kitty theme switching) |
+| `rterm` | Rename kitty terminal tab + random dark theme |
+| `yolo` | Run `claude --dangerously-skip-permissions` |
 
-This installs:
-- `mcp-manager` command to `~/mcp-management/`
-- All 18+ pre-configured MCP servers
-- Secrets sync scripts for Cloudflare KV
-- The `mcp-manager` alias in your shell
-
-Usage remains the same:
-```bash
-mcp-manager list
-mcp-manager enable sequential-thinking github
-mcp-manager sync  # Pull secrets from Cloudflare
-```
-
----
-
-# Claude MCP Manager (Legacy)
-
-A command-line tool for managing MCP (Model Context Protocol) servers for Claude CLI and Claude Code.
-
-Instead of manually editing configuration files every time you want to change MCP servers, this tool provides simple commands to enable and disable servers from a reusable library. Per-project configurations mean you can have different servers active for different projects.
-
-## Features
-
-- **Server Library**: Maintain a centralized library of MCP server configurations
-- **Per-Project Settings**: Enable different servers for different projects
-- **Environment Variables**: Secure API key management via `.env` file
-- **Simple CLI**: Enable/disable servers with straightforward commands
-- **Pre-configured Servers**: Ships with 14 popular MCP servers ready to use
+### Shell Aliases (`bash_aliases`)
+Git shortcuts, safety aliases (`rm -i`, `cp -i`), Cloudflare/Wrangler shortcuts, and more.
 
 ## Installation
 
 ### Prerequisites
 
-The script requires `jq` for JSON processing:
-
 ```bash
 sudo apt-get update && sudo apt-get install -y jq
 ```
 
-### Automated Installation (Recommended)
+### Install
 
 ```bash
-git clone https://github.com/CyberBrown/claude-mcp-config.git
-cd claude-mcp-config
+git clone https://github.com/CyberBrown/claude-mcp-manager.git
+cd claude-mcp-manager
 chmod +x install.sh
 ./install.sh
-```
-
-Configure your API keys:
-
-```bash
-nano ~/mcp-management/.env
-```
-
-Reload your shell:
-
-```bash
 source ~/.bashrc
 ```
 
-### Manual Installation
+This installs:
+- `mcp-manager` command to `~/mcp-management/`
+- Utility scripts to `~/.local/bin/`
+- Shell aliases to `~/.bash_aliases`
 
-1. Clone the repository and create the installation directory:
-
-```bash
-git clone https://github.com/CyberBrown/claude-mcp-config.git
-mkdir -p ~/mcp-management
-```
-
-2. Copy files to the installation directory:
+### Configure API Keys
 
 ```bash
-cd claude-mcp-config
-cp mcp-manager.sh servers-library.json .example.env commands.md ~/mcp-management/
-chmod +x ~/mcp-management/mcp-manager.sh
-```
-
-3. Create your `.env` file:
-
-```bash
-cp ~/mcp-management/.example.env ~/mcp-management/.env
 nano ~/mcp-management/.env
-```
-
-4. Add to your `~/.bashrc`:
-
-```bash
-# Claude MCP Manager
-export PATH="$HOME/mcp-management:$PATH"
-alias mcp-manager="$HOME/mcp-management/mcp-manager.sh"
-```
-
-5. Reload your shell:
-
-```bash
-source ~/.bashrc
 ```
 
 ## Usage
 
-### List available servers
+### MCP Manager
 
 ```bash
-mcp-manager list
-```
-
-### Show active servers in current project
-
-```bash
-mcp-manager active
-```
-
-### Enable servers
-
-```bash
-mcp-manager enable server1 server2 server3
-```
-
-### Disable servers
-
-```bash
+mcp-manager list          # List available servers
+mcp-manager active        # Show active servers
+mcp-manager enable server1 server2
 mcp-manager disable server1
+mcp-manager reset         # Disable all servers
 ```
 
-### Reset (disable all servers)
+### Dev Tools
 
 ```bash
-mcp-manager reset
+get-started git@github.com:User/repo.git   # Clone + setup project
+wrap-up                                      # End-of-session cleanup
+wrap-up -pr main --private                   # With PR target + repo visibility
 ```
 
-## Included Servers
+## Included MCP Servers
 
 | Server | Description | Requirements |
 |--------|-------------|--------------|
 | `vibe-check` | Peer review for projects | `GEMINI_API_KEY` |
 | `sequential-thinking` | Anthropic's reasoning server | None |
-| `cloudflare` | Cloudflare integration | OAuth (browser) |
-| `linear` | Todo list / issue tracking | OAuth (browser) |
+| `cloudflare` | Cloudflare integration | OAuth |
+| `linear` | Todo list / issue tracking | OAuth |
 | `vercel` | Vercel platform integration | None |
 | `github` | GitHub integration | `GITHUB_PERSONAL_ACCESS_TOKEN` |
-| `sentry` | Error logging integration | OAuth (browser) |
-| `supabase` | Database management | OAuth (browser) |
-| `gcloud` | Google Cloud integration | OAuth (browser) |
+| `sentry` | Error logging integration | OAuth |
+| `supabase` | Database management | OAuth |
+| `gcloud` | Google Cloud integration | OAuth |
 | `Pieces` | Code snippets & long-term memory | None |
 | `GitMCP` | Remote Git server | `GITMCP_SERVER` |
 | `context7` | Document library | `CONTEXT7_API_KEY` |
 | `apify` | Web scraping | None |
-| `developer-guides` | Developer documentation | None |
+| `developer-guides` | Developer documentation | CF Access |
 | `mnemo` | Extended context/memory (1M token cache) | None |
+| `nexus` | Task/idea management with AI planning | None |
+| `stripe` | Stripe payments API | `STRIPE_SECRET_KEY` |
 
 ## Configuration
 
-### Environment Variables
-
-Create a `.env` file in `~/mcp-management/` with your API keys:
-
-```bash
-GEMINI_API_KEY=your_key_here
-GITHUB_PERSONAL_ACCESS_TOKEN=your_token_here
-CONTEXT7_API_KEY=your_key_here
-GITMCP_SERVER=https://gitmcp.io/your-repo
-```
-
 ### Adding Custom Servers
 
-Edit `~/mcp-management/servers-library.json` to add new servers. See `commands.md` for detailed instructions.
-
-Example server entry:
+Edit `~/mcp-management/servers-library.json`:
 
 ```json
 {
@@ -194,91 +108,27 @@ Example server entry:
 }
 ```
 
-Environment variables in the format `${VAR_NAME}` are automatically expanded from your `.env` file.
+Environment variables in `${VAR_NAME}` format are expanded from your `.env` file.
 
 ## Secrets Sync (Optional)
 
-For users who work across multiple machines, you can optionally sync your API keys using Cloudflare Workers KV. This is **completely optional** - you can always just use a local `.env` file.
-
-### Local Only (Default)
-
-Just edit your `.env` file directly:
-
-```bash
-cp ~/mcp-management/.example.env ~/mcp-management/.env
-nano ~/mcp-management/.env
-```
-
-### Multi-Machine Sync
-
-Set up Cloudflare sync to share API keys across machines:
+Sync API keys across machines using Cloudflare Workers KV:
 
 ```bash
 cd ~/mcp-management/secrets-sync
 npm install
-npm run auth  # Choose browser OAuth or API token
+npm run auth
 npm run deploy
 ```
 
 See `commands.md` for full setup instructions.
 
-#### Authentication Options
-
-| Method | Best For | Command |
-|--------|----------|---------|
-| Browser OAuth | Local machines with browser | `npm run auth` → Option 1 |
-| API Token | Remote/headless servers | `npm run auth` → Option 2 |
-
-For remote servers without browser access, create an API token at [dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens) using the "Edit Cloudflare Workers" template, or create a custom token with these permissions:
-
-- **Account: Workers Scripts** - Edit
-- **Account: Workers KV Storage** - Edit
-- **Account: Account Settings** - Read
-
 ## How It Works
 
 1. Server configurations are stored in `servers-library.json`
-2. When you enable a server, it's added to `~/.claude.json` for your current project
-3. Claude Code reads from `~/.claude.json` to determine which MCP servers to use
-4. Restart Claude Code after making changes for them to take effect
-
-## Troubleshooting
-
-**Changes not taking effect?**
-Restart Claude Code after enabling/disabling servers.
-
-**Server not found?**
-Check that the server name matches exactly what's in `mcp-manager list`.
-
-**API key errors?**
-Verify your `.env` file has the required keys and run `source ~/.bashrc` to reload.
-
-## Development
-
-### GitHub Authentication
-
-This project uses SSH for GitHub authentication. Ensure your SSH key is set up:
-
-```bash
-# Check for existing SSH key
-ls -la ~/.ssh/id_ed25519.pub
-
-# Or generate a new one
-ssh-keygen -t ed25519 -C "your_email@example.com"
-
-# Add to ssh-agent
-eval "$(ssh-agent -s)"
-ssh-add ~/.ssh/id_ed25519
-
-# Copy public key and add to GitHub Settings > SSH Keys
-cat ~/.ssh/id_ed25519.pub
-```
-
-Clone using SSH:
-
-```bash
-git clone git@github.com:CyberBrown/claude-mcp-config.git
-```
+2. When you enable a server, it's added to `~/.claude.json`
+3. Claude Code reads `~/.claude.json` to determine active MCP servers
+4. Restart Claude Code after making changes
 
 ## License
 
