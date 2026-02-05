@@ -24,12 +24,16 @@ echo "Creating directories..."
 mkdir -p "$INSTALL_DIR"
 mkdir -p "$BIN_DIR"
 
-# Copy MCP manager files
+# Copy MCP manager files (skip if running from install dir to avoid copying onto itself)
 echo "Installing MCP manager..."
-cp "$SCRIPT_DIR/mcp-manager.sh" "$INSTALL_DIR/"
-cp "$SCRIPT_DIR/servers-library.json" "$INSTALL_DIR/"
-cp "$SCRIPT_DIR/.example.env" "$INSTALL_DIR/"
-cp "$SCRIPT_DIR/commands.md" "$INSTALL_DIR/"
+if [ "$SCRIPT_DIR" != "$INSTALL_DIR" ]; then
+    cp "$SCRIPT_DIR/mcp-manager.sh" "$INSTALL_DIR/"
+    cp "$SCRIPT_DIR/servers-library.json" "$INSTALL_DIR/"
+    cp "$SCRIPT_DIR/.example.env" "$INSTALL_DIR/"
+    cp "$SCRIPT_DIR/commands.md" "$INSTALL_DIR/"
+else
+    echo "  Running from install dir, skipping file copy"
+fi
 chmod +x "$INSTALL_DIR/mcp-manager.sh"
 
 # Create .env file if it doesn't exist

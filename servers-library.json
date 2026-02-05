@@ -110,7 +110,7 @@
   "mnemo": {
     "description": "Extended context/memory using Gemini's 1M token context cache. Load entire repos and query them.",
     "type": "http",
-    "url": "https://mnemo.logosflux.io/mcp"
+    "url": "https://mnemo.solamp.workers.dev/mcp"
   },
   "nexus": {
     "description": "Task and idea management system. Capture ideas, break them into tasks, dispatch to executors (claude-ai, claude-code, human), track status and store decision logs.",

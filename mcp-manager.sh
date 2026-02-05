@@ -5,6 +5,8 @@ CONFIG_FILE="$HOME/.claude.json"
 ENV_FILE="$HOME/mcp-management/.env"
 SYNC_CONFIG="$HOME/mcp-management/sync-config"
 PULL_SCRIPT="$HOME/mcp-management/secrets-pull.sh"
+MACHINES_FILE="$HOME/mcp-management/.machines.json"
+REPO_DIR="$HOME/mcp-management"
 
 # Colors for output
 RED='\033[0;31m'
@@ -80,6 +82,35 @@ get_project_path() {
     echo "$(pwd)"
 }
 
+# Expand environment variables in a server config JSON (stdin -> stdout)
+# Handles both pure "${VAR}" strings and embedded "${VAR}" within larger strings.
+# Missing env vars are kept as "${VAR}" placeholder instead of becoming null.
+expand_server_config() {
+    jq 'walk(
+        if type == "string" then
+            if startswith("${") and endswith("}") then
+                env[.[2:-1]] // .
+            else
+                gsub("\\$\\{(?<v>[A-Za-z_][A-Za-z0-9_]*)\\}"; env[.v] // ("${" + .v + "}"))
+            end
+        else . end
+    )'
+}
+
+# Check for unexpanded ${VAR} references in a JSON string and emit warnings.
+# Takes server name as $1, expanded config JSON as $2.
+check_unexpanded_vars() {
+    local server_name="$1"
+    local config_json="$2"
+    local unexpanded
+    unexpanded=$(echo "$config_json" | grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*\}' | sort -u)
+    if [ -n "$unexpanded" ]; then
+        for var in $unexpanded; do
+            echo -e "${YELLOW}  Warning: $server_name has unresolved $var (env var not set)${NC}"
+        done
+    fi
+}
+
 # Function to show usage
 usage() {
     echo "Usage: mcp-manager [command] [server-names...]"
@@ -89,7 +120,9 @@ usage() {
     echo "  active            - Show currently active servers in this project"
     echo "  enable <servers>  - Enable one or more servers in this project"
     echo "  disable <servers> - Disable one or more servers in this project"
-    echo "  update            - Pull repo and update all active servers from library"
+    echo "  update            - Self-update, re-install, fix all project configs"
+    echo "  verify [--fix]    - Scan all projects for corrupted/drifted configs"
+    echo "  machines          - Show which machines are up to date"
     echo "  reset             - Disable all servers in this project"
     echo "  sync              - Sync secrets from Cloudflare"
     echo "  push              - Push local secrets to Cloudflare"
@@ -100,6 +133,9 @@ usage() {
     echo "  mcp-manager enable vibe-check github"
     echo "  mcp-manager disable vibe-check"
     echo "  mcp-manager update"
+    echo "  mcp-manager verify"
+    echo "  mcp-manager verify --fix"
+    echo "  mcp-manager machines"
     echo "  mcp-manager reset"
     echo "  mcp-manager sync"
     echo "  mcp-manager push"
@@ -141,7 +177,6 @@ push_secrets() {
 
 # Function to check for updates
 check_for_updates() {
-    REPO_DIR="$HOME/mcp-management"
     if [ -d "$REPO_DIR/.git" ]; then
         cd "$REPO_DIR"
         # Fetch latest from remote quietly
@@ -168,14 +203,14 @@ list_servers() {
     # Check for updates
     if check_for_updates; then
         echo ""
-        echo -e "${YELLOW}⚠ Update available! Run 'mcp-manager update' to get the latest servers.${NC}"
+        echo -e "${YELLOW}Update available! Run 'mcp-manager update' to get the latest servers.${NC}"
     fi
 }
 
 # Function to show active servers
 show_active() {
     PROJECT_PATH=$(get_project_path)
-    
+
     if [ -f "$CONFIG_FILE" ]; then
         echo "Currently active MCP servers in $PROJECT_PATH:"
         jq -r --arg path "$PROJECT_PATH" '.projects[$path].mcpServers // {} | keys[]' "$CONFIG_FILE" 2>/dev/null || echo "None"
@@ -187,7 +222,7 @@ show_active() {
 # Function to enable servers
 enable_servers() {
     PROJECT_PATH=$(get_project_path)
-    
+
     # Create config file if it doesn't exist
     if [ ! -f "$CONFIG_FILE" ]; then
         echo '{"projects":{}}' > "$CONFIG_FILE"
@@ -195,10 +230,10 @@ enable_servers() {
 
     # Read current config
     CURRENT_CONFIG=$(cat "$CONFIG_FILE")
-    
+
     # Initialize project if it doesn't exist
     CURRENT_CONFIG=$(echo "$CURRENT_CONFIG" | jq --arg path "$PROJECT_PATH" '
-        if .projects[$path] then . 
+        if .projects[$path] then .
         else .projects[$path] = {
             "allowedTools": [],
             "history": [],
@@ -218,27 +253,21 @@ enable_servers() {
     for SERVER in "$@"; do
         # Check if server exists in library
         SERVER_CONFIG=$(jq -r --arg name "$SERVER" '.[$name] // empty' "$LIBRARY_FILE")
-        
+
         if [ -z "$SERVER_CONFIG" ]; then
             echo "Warning: Server '$SERVER' not found in library, skipping..."
             continue
         fi
 
         # Expand environment variables in the server config
-        # This replaces ${VAR_NAME} with the actual environment variable value
-        SERVER_CONFIG_EXPANDED=$(echo "$SERVER_CONFIG" | jq 'walk(
-            if type == "string" and startswith("${") and endswith("}") then
-                env[.[2:-1]]
-            else
-                .
-            end
-        )')
-        
+        SERVER_CONFIG_EXPANDED=$(echo "$SERVER_CONFIG" | expand_server_config)
+        check_unexpanded_vars "$SERVER" "$SERVER_CONFIG_EXPANDED"
+
         # Add server to project config
         CURRENT_CONFIG=$(echo "$CURRENT_CONFIG" | jq --arg path "$PROJECT_PATH" --arg name "$SERVER" --argjson config "$SERVER_CONFIG_EXPANDED" \
             '.projects[$path].mcpServers[$name] = $config')
-        
-        echo "✓ Enabled: $SERVER"
+
+        echo "Enabled: $SERVER"
     done
 
     # Write updated config
@@ -250,7 +279,7 @@ enable_servers() {
 # Function to disable servers
 disable_servers() {
     PROJECT_PATH=$(get_project_path)
-    
+
     if [ ! -f "$CONFIG_FILE" ]; then
         echo "No config file found, nothing to disable"
         return
@@ -261,7 +290,7 @@ disable_servers() {
     for SERVER in "$@"; do
         CURRENT_CONFIG=$(echo "$CURRENT_CONFIG" | jq --arg path "$PROJECT_PATH" --arg name "$SERVER" \
             'del(.projects[$path].mcpServers[$name])')
-        echo "✓ Disabled: $SERVER"
+        echo "Disabled: $SERVER"
     done
 
     echo "$CURRENT_CONFIG" | jq . > "$CONFIG_FILE"
@@ -269,93 +298,331 @@ disable_servers() {
     echo "Done! Restart Claude Code for changes to take effect."
 }
 
-# Function to update servers from library
-update_servers() {
-    PROJECT_PATH=$(get_project_path)
+# Remove chezmoi if present (legacy config manager, no longer used)
+remove_chezmoi() {
+    local removed=0
+    if [ -f "$HOME/.local/bin/chezmoi" ]; then
+        rm -f "$HOME/.local/bin/chezmoi"
+        ((removed++))
+    fi
+    if [ -d "$HOME/.local/share/chezmoi" ]; then
+        rm -rf "$HOME/.local/share/chezmoi"
+        ((removed++))
+    fi
+    if [ -d "$HOME/.config/chezmoi" ]; then
+        rm -rf "$HOME/.config/chezmoi"
+        ((removed++))
+    fi
+    if [ $removed -gt 0 ]; then
+        echo -e "${GREEN}Removed chezmoi ($removed items)${NC}"
+    fi
+}
 
-    # Pull latest changes from repo
-    echo "Pulling latest server library..."
-    REPO_DIR="$HOME/mcp-management"
+# Record this machine's version in .machines.json
+record_machine_version() {
+    local hostname
+    hostname=$(hostname)
+    local commit
+    commit=$(cd "$REPO_DIR" && git rev-parse HEAD 2>/dev/null)
+    local timestamp
+    timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    local project_count=0
+    if [ -f "$CONFIG_FILE" ]; then
+        project_count=$(jq '[.projects // {} | to_entries[] | select((.value.mcpServers // {} | length) > 0)] | length' "$CONFIG_FILE" 2>/dev/null || echo 0)
+    fi
+
+    # Initialize machines file if missing
+    if [ ! -f "$MACHINES_FILE" ]; then
+        echo '{}' > "$MACHINES_FILE"
+    fi
+
+    # Update this machine's entry
+    jq --arg host "$hostname" \
+       --arg commit "$commit" \
+       --arg ts "$timestamp" \
+       --argjson count "$project_count" \
+       '.[$host] = {"commit": $commit, "updated": $ts, "projects": $count}' \
+       "$MACHINES_FILE" > "$MACHINES_FILE.tmp" && mv "$MACHINES_FILE.tmp" "$MACHINES_FILE"
+}
+
+# Function to update: self-update, re-install, fix ALL project configs
+update_servers() {
+    # Step 1: Pull latest changes from repo
+    echo "Step 1: Pulling latest server library..."
     if [ -d "$REPO_DIR/.git" ]; then
         cd "$REPO_DIR" && git pull --quiet
         if [ $? -eq 0 ]; then
-            echo -e "${GREEN}✓ Repository updated${NC}"
+            echo -e "${GREEN}Repository updated${NC}"
         else
-            echo -e "${YELLOW}⚠ Could not pull repo (continuing with local library)${NC}"
+            echo -e "${YELLOW}Could not pull repo (continuing with local library)${NC}"
         fi
         cd - > /dev/null
     else
-        echo -e "${YELLOW}⚠ No git repo found at $REPO_DIR${NC}"
+        echo -e "${YELLOW}No git repo found at $REPO_DIR${NC}"
     fi
     echo ""
 
+    # Step 2: Re-run install.sh to update bin scripts + aliases
+    echo "Step 2: Re-installing scripts and aliases..."
+    if [ -x "$REPO_DIR/install.sh" ]; then
+        bash "$REPO_DIR/install.sh"
+    else
+        echo -e "${YELLOW}install.sh not found or not executable, skipping${NC}"
+    fi
+    echo ""
+
+    # Step 3: Remove chezmoi if present
+    echo "Step 3: Cleaning up legacy tools..."
+    remove_chezmoi
+    echo ""
+
+    # Step 4: Update ALL projects' MCP configs from library
+    echo "Step 4: Updating MCP configs across all projects..."
     if [ ! -f "$CONFIG_FILE" ]; then
         echo "No config file found, nothing to update"
+    else
+        CURRENT_CONFIG=$(cat "$CONFIG_FILE")
+
+        # Get all project paths that have mcpServers
+        ALL_PROJECTS=$(echo "$CURRENT_CONFIG" | jq -r '.projects // {} | to_entries[] | select(.value.mcpServers != null and (.value.mcpServers | length) > 0) | .key' 2>/dev/null)
+
+        if [ -z "$ALL_PROJECTS" ]; then
+            echo "No projects with active servers found"
+        else
+            TOTAL_UPDATED=0
+            TOTAL_SKIPPED=0
+
+            while IFS= read -r PROJECT_PATH; do
+                echo ""
+                echo -e "  Project: ${PROJECT_PATH}"
+
+                ACTIVE_SERVERS=$(echo "$CURRENT_CONFIG" | jq -r --arg path "$PROJECT_PATH" '.projects[$path].mcpServers // {} | keys[]' 2>/dev/null)
+
+                for SERVER in $ACTIVE_SERVERS; do
+                    # Check if server exists in library
+                    SERVER_CONFIG=$(jq -r --arg name "$SERVER" '.[$name] // empty' "$LIBRARY_FILE")
+
+                    if [ -z "$SERVER_CONFIG" ]; then
+                        echo -e "    ${YELLOW}Skipped: $SERVER (custom, not in library)${NC}"
+                        ((TOTAL_SKIPPED++))
+                        continue
+                    fi
+
+                    # Expand environment variables
+                    SERVER_CONFIG_EXPANDED=$(echo "$SERVER_CONFIG" | expand_server_config)
+                    check_unexpanded_vars "$SERVER" "$SERVER_CONFIG_EXPANDED"
+
+                    # Update server in project config
+                    CURRENT_CONFIG=$(echo "$CURRENT_CONFIG" | jq --arg path "$PROJECT_PATH" --arg name "$SERVER" --argjson config "$SERVER_CONFIG_EXPANDED" \
+                        '.projects[$path].mcpServers[$name] = $config')
+
+                    echo -e "    ${GREEN}Updated: $SERVER${NC}"
+                    ((TOTAL_UPDATED++))
+                done
+            done <<< "$ALL_PROJECTS"
+
+            # Write updated config
+            echo "$CURRENT_CONFIG" | jq . > "$CONFIG_FILE"
+            echo ""
+            echo "Updated $TOTAL_UPDATED server(s), skipped $TOTAL_SKIPPED custom server(s)."
+        fi
+    fi
+    echo ""
+
+    # Step 5: Record machine version
+    echo "Step 5: Recording machine version..."
+    record_machine_version
+    local hostname
+    hostname=$(hostname)
+    echo -e "${GREEN}Recorded $hostname at $(cd "$REPO_DIR" && git rev-parse --short HEAD 2>/dev/null)${NC}"
+
+    # Step 6: Commit + push .machines.json
+    if [ -d "$REPO_DIR/.git" ]; then
+        cd "$REPO_DIR"
+        if git diff --quiet "$MACHINES_FILE" 2>/dev/null && git diff --cached --quiet "$MACHINES_FILE" 2>/dev/null; then
+            echo "No changes to .machines.json"
+        else
+            git add "$MACHINES_FILE" 2>/dev/null
+            git commit -m "update $hostname machine version" --quiet 2>/dev/null
+            git push --quiet 2>/dev/null
+            if [ $? -eq 0 ]; then
+                echo -e "${GREEN}Pushed .machines.json${NC}"
+            else
+                echo -e "${YELLOW}Could not push .machines.json (push manually later)${NC}"
+            fi
+        fi
+        cd - > /dev/null
+    fi
+
+    echo ""
+    echo "Update complete! Restart Claude Code for changes to take effect."
+}
+
+# Verify all project configs against the library
+verify_configs() {
+    local fix_mode=false
+    if [ "$1" = "--fix" ]; then
+        fix_mode=true
+    fi
+
+    if [ ! -f "$CONFIG_FILE" ]; then
+        echo "No config file found, nothing to verify"
         return
     fi
+
+    echo "Scanning all projects in ~/.claude.json..."
+    echo ""
 
     CURRENT_CONFIG=$(cat "$CONFIG_FILE")
+    ALL_PROJECTS=$(echo "$CURRENT_CONFIG" | jq -r '.projects // {} | to_entries[] | select(.value.mcpServers != null and (.value.mcpServers | length) > 0) | .key' 2>/dev/null)
 
-    # Get list of currently active servers
-    ACTIVE_SERVERS=$(echo "$CURRENT_CONFIG" | jq -r --arg path "$PROJECT_PATH" '.projects[$path].mcpServers // {} | keys[]' 2>/dev/null)
-
-    if [ -z "$ACTIVE_SERVERS" ]; then
-        echo "No active servers to update in $PROJECT_PATH"
+    if [ -z "$ALL_PROJECTS" ]; then
+        echo "No projects with active servers found"
         return
     fi
 
-    UPDATED=0
-    SKIPPED=0
+    TOTAL_ISSUES=0
+    TOTAL_FIXED=0
 
-    for SERVER in $ACTIVE_SERVERS; do
-        # Check if server exists in library
-        SERVER_CONFIG=$(jq -r --arg name "$SERVER" '.[$name] // empty' "$LIBRARY_FILE")
+    while IFS= read -r PROJECT_PATH; do
+        echo -e "Project: ${PROJECT_PATH}"
 
-        if [ -z "$SERVER_CONFIG" ]; then
-            echo -e "${YELLOW}⊘ Skipped: $SERVER (not in library, keeping custom config)${NC}"
-            ((SKIPPED++))
-            continue
-        fi
+        ACTIVE_SERVERS=$(echo "$CURRENT_CONFIG" | jq -r --arg path "$PROJECT_PATH" '.projects[$path].mcpServers // {} | keys[]' 2>/dev/null)
 
-        # Expand environment variables in the server config
-        SERVER_CONFIG_EXPANDED=$(echo "$SERVER_CONFIG" | jq 'walk(
-            if type == "string" and startswith("${") and endswith("}") then
-                env[.[2:-1]]
+        for SERVER in $ACTIVE_SERVERS; do
+            ISSUES=""
+
+            # Get current config for this server
+            CURRENT_SERVER=$(echo "$CURRENT_CONFIG" | jq --arg path "$PROJECT_PATH" --arg name "$SERVER" '.projects[$path].mcpServers[$name]')
+
+            # Check 1: @anthropic-ai/mcp-* corruption pattern
+            # This detects when Claude Code corrupts server configs with its own internal package refs
+            HAS_CORRUPTION=$(echo "$CURRENT_SERVER" | jq 'if .args then (.args | map(select(type == "string" and contains("@anthropic-ai/mcp-"))) | length > 0) else false end' 2>/dev/null)
+            if [ "$HAS_CORRUPTION" = "true" ]; then
+                ISSUES="${ISSUES}CORRUPT(@anthropic-ai/mcp-* in args) "
+            fi
+
+            # Check 2: Null values in config
+            HAS_NULLS=$(echo "$CURRENT_SERVER" | jq '[.. | select(. == null)] | length > 0' 2>/dev/null)
+            if [ "$HAS_NULLS" = "true" ]; then
+                ISSUES="${ISSUES}NULL_VALUES "
+            fi
+
+            # Check 3: Config drift vs library
+            LIBRARY_CONFIG=$(jq -r --arg name "$SERVER" '.[$name] // empty' "$LIBRARY_FILE")
+
+            if [ -z "$LIBRARY_CONFIG" ]; then
+                # Server not in library - info only, no fix
+                echo -e "  ${YELLOW}INFO: $SERVER (custom, not in library)${NC}"
+                continue
+            fi
+
+            # Expand library config for comparison
+            LIBRARY_EXPANDED=$(echo "$LIBRARY_CONFIG" | expand_server_config)
+
+            # Compare key fields: args, env, url, type, command
+            DRIFT=$(jq -n \
+                --argjson current "$CURRENT_SERVER" \
+                --argjson library "$LIBRARY_EXPANDED" \
+                '
+                def compare_field(f):
+                    ($current[f] // null) != ($library[f] // null);
+                [
+                    (if compare_field("args") then "args" else empty end),
+                    (if compare_field("env") then "env" else empty end),
+                    (if compare_field("url") then "url" else empty end),
+                    (if compare_field("type") then "type" else empty end),
+                    (if compare_field("command") then "command" else empty end)
+                ] | if length > 0 then join(",") else empty end
+                ' 2>/dev/null)
+
+            if [ -n "$DRIFT" ]; then
+                ISSUES="${ISSUES}DRIFT($DRIFT) "
+            fi
+
+            # Report findings
+            if [ -n "$ISSUES" ]; then
+                ((TOTAL_ISSUES++))
+                echo -e "  ${RED}$SERVER: $ISSUES${NC}"
+
+                if $fix_mode; then
+                    # Replace with correct library version
+                    CURRENT_CONFIG=$(echo "$CURRENT_CONFIG" | jq --arg path "$PROJECT_PATH" --arg name "$SERVER" --argjson config "$LIBRARY_EXPANDED" \
+                        '.projects[$path].mcpServers[$name] = $config')
+                    echo -e "    ${GREEN}FIXED${NC}"
+                    ((TOTAL_FIXED++))
+                fi
             else
-                .
-            end
-        )')
+                echo -e "  ${GREEN}$SERVER: OK${NC}"
+            fi
+        done
+        echo ""
+    done <<< "$ALL_PROJECTS"
 
-        # Update server in project config
-        CURRENT_CONFIG=$(echo "$CURRENT_CONFIG" | jq --arg path "$PROJECT_PATH" --arg name "$SERVER" --argjson config "$SERVER_CONFIG_EXPANDED" \
-            '.projects[$path].mcpServers[$name] = $config')
+    # Write fixes if any
+    if $fix_mode && [ $TOTAL_FIXED -gt 0 ]; then
+        echo "$CURRENT_CONFIG" | jq . > "$CONFIG_FILE"
+    fi
 
-        echo -e "${GREEN}✓ Updated: $SERVER${NC}"
-        ((UPDATED++))
-    done
+    echo "---"
+    echo "Total issues: $TOTAL_ISSUES"
+    if $fix_mode; then
+        echo "Fixed: $TOTAL_FIXED"
+    elif [ $TOTAL_ISSUES -gt 0 ]; then
+        echo "Run 'mcp-manager verify --fix' to repair"
+    fi
+}
 
-    # Write updated config
-    echo "$CURRENT_CONFIG" | jq . > "$CONFIG_FILE"
+# Show machine version status
+show_machines() {
+    if [ ! -f "$MACHINES_FILE" ]; then
+        echo "No machines tracked yet. Run 'mcp-manager update' to record this machine."
+        return
+    fi
+
+    # Get repo HEAD commit
+    local head_commit
+    if [ -d "$REPO_DIR/.git" ]; then
+        head_commit=$(cd "$REPO_DIR" && git rev-parse HEAD 2>/dev/null)
+    fi
+
+    if [ -z "$head_commit" ]; then
+        echo -e "${RED}Could not determine repo HEAD commit${NC}"
+        return
+    fi
+
+    local head_short
+    head_short=$(cd "$REPO_DIR" && git rev-parse --short HEAD 2>/dev/null)
+    echo "Repo HEAD: $head_short"
     echo ""
-    echo "Updated $UPDATED server(s), skipped $SKIPPED custom server(s)."
-    echo "Restart Claude Code for changes to take effect."
+
+    # Iterate machines
+    jq -r 'to_entries[] | "\(.key)\t\(.value.commit)\t\(.value.updated)\t\(.value.projects)"' "$MACHINES_FILE" 2>/dev/null | \
+    while IFS=$'\t' read -r host commit updated projects; do
+        local short_commit="${commit:0:7}"
+        if [ "$commit" = "$head_commit" ]; then
+            echo -e "  ${GREEN}$host: UP TO DATE ($short_commit, $updated, $projects projects)${NC}"
+        else
+            echo -e "  ${YELLOW}$host: STALE ($short_commit, $updated, $projects projects)${NC}"
+        fi
+    done
 }
 
 # Function to reset (disable all)
 reset_servers() {
     PROJECT_PATH=$(get_project_path)
-    
+
     if [ ! -f "$CONFIG_FILE" ]; then
         echo "No config file found"
         return
     fi
-    
+
     CURRENT_CONFIG=$(cat "$CONFIG_FILE")
     CURRENT_CONFIG=$(echo "$CURRENT_CONFIG" | jq --arg path "$PROJECT_PATH" \
         '.projects[$path].mcpServers = {}')
-    
+
     echo "$CURRENT_CONFIG" | jq . > "$CONFIG_FILE"
-    echo "✓ All servers disabled in $PROJECT_PATH"
+    echo "All servers disabled in $PROJECT_PATH"
     echo ""
     echo "Restart Claude Code for changes to take effect."
 }
@@ -388,6 +655,13 @@ case "$1" in
         ;;
     update)
         update_servers
+        ;;
+    verify)
+        shift
+        verify_configs "$1"
+        ;;
+    machines)
+        show_machines
         ;;
     reset)
         reset_servers
