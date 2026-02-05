@@ -7,6 +7,21 @@ SYNC_CONFIG="$HOME/mcp-management/sync-config"
 PULL_SCRIPT="$HOME/mcp-management/secrets-pull.sh"
 MACHINES_FILE="$HOME/mcp-management/.machines.json"
 REPO_DIR="$HOME/mcp-management"
+CLAUDE_HOME="$HOME/.claude"
+CLAUDE_HOME_REPO="$REPO_DIR/claude-home"
+
+SYNC_FILES=(
+    "CLAUDE.md"
+    "settings.json"
+    "settings.local.json"
+    "plugins/installed_plugins.json"
+    "plugins/known_marketplaces.json"
+)
+
+SYNC_DIRS=(
+    "commands"
+    "skills"
+)
 
 # Colors for output
 RED='\033[0;31m'
@@ -127,6 +142,12 @@ usage() {
     echo "  sync              - Sync secrets from Cloudflare"
     echo "  push              - Push local secrets to Cloudflare"
     echo ""
+    echo "Home config sync (~/.claude/):"
+    echo "  home push         - Push ~/.claude/ config to repo"
+    echo "  home pull         - Pull config from repo to ~/.claude/"
+    echo "  home diff         - Show differences between local and repo"
+    echo "  home status       - Quick sync status summary"
+    echo ""
     echo "Examples:"
     echo "  mcp-manager list"
     echo "  mcp-manager active"
@@ -139,6 +160,8 @@ usage() {
     echo "  mcp-manager reset"
     echo "  mcp-manager sync"
     echo "  mcp-manager push"
+    echo "  mcp-manager home push"
+    echo "  mcp-manager home diff"
 }
 
 # Function to sync secrets from Cloudflare
@@ -172,6 +195,220 @@ push_secrets() {
     else
         echo -e "${RED}Error: Push script not found or not executable${NC}"
         exit 1
+    fi
+}
+
+# Collect syncable relative paths from a base directory
+# Usage: collect_sync_paths /path/to/base
+# Outputs newline-separated relative paths
+collect_sync_paths() {
+    local base="$1"
+    for f in "${SYNC_FILES[@]}"; do
+        if [ -f "$base/$f" ]; then
+            echo "$f"
+        fi
+    done
+    for d in "${SYNC_DIRS[@]}"; do
+        if [ -d "$base/$d" ]; then
+            for f in "$base/$d"/*.md; do
+                [ -f "$f" ] && echo "$d/$(basename "$f")"
+            done
+        fi
+    done
+}
+
+# Push ~/.claude/ config to repo
+home_push() {
+    local paths
+    paths=$(collect_sync_paths "$CLAUDE_HOME")
+
+    if [ -z "$paths" ]; then
+        echo -e "${RED}No syncable files found in $CLAUDE_HOME${NC}"
+        return 1
+    fi
+
+    echo "Collecting files from $CLAUDE_HOME..."
+
+    # Create dirs and copy files
+    local count=0
+    while IFS= read -r relpath; do
+        local dir
+        dir=$(dirname "$relpath")
+        mkdir -p "$CLAUDE_HOME_REPO/$dir"
+        cp "$CLAUDE_HOME/$relpath" "$CLAUDE_HOME_REPO/$relpath"
+        echo -e "  ${GREEN}$relpath${NC}"
+        ((count++))
+    done <<< "$paths"
+
+    # Remove orphaned files in repo (deleted locally)
+    local repo_paths
+    repo_paths=$(collect_sync_paths "$CLAUDE_HOME_REPO")
+    if [ -n "$repo_paths" ]; then
+        while IFS= read -r relpath; do
+            if [ ! -f "$CLAUDE_HOME/$relpath" ]; then
+                rm -f "$CLAUDE_HOME_REPO/$relpath"
+                echo -e "  ${RED}Removed orphan: $relpath${NC}"
+            fi
+        done <<< "$repo_paths"
+    fi
+
+    echo ""
+    echo "Copied $count file(s) to claude-home/"
+
+    # Git commit and push
+    if [ -d "$REPO_DIR/.git" ]; then
+        cd "$REPO_DIR"
+        git add claude-home/
+        if git diff --cached --quiet claude-home/ 2>/dev/null; then
+            echo "No changes to commit"
+        else
+            local hostname
+            hostname=$(hostname)
+            git commit -m "home: push from $hostname" --quiet
+            echo -e "${GREEN}Committed${NC}"
+            git push --quiet 2>/dev/null
+            if [ $? -eq 0 ]; then
+                echo -e "${GREEN}Pushed to remote${NC}"
+            else
+                echo -e "${YELLOW}Could not push (push manually later)${NC}"
+            fi
+        fi
+        cd - > /dev/null
+    fi
+}
+
+# Pull config from repo to ~/.claude/
+home_pull() {
+    if [ ! -d "$CLAUDE_HOME_REPO" ]; then
+        echo -e "${YELLOW}No claude-home/ directory in repo yet.${NC}"
+        echo "Run 'mcp-manager home push' from a machine with your config first."
+        return 1
+    fi
+
+    # Pull latest
+    if [ -d "$REPO_DIR/.git" ]; then
+        cd "$REPO_DIR" && git pull --quiet 2>/dev/null
+        cd - > /dev/null
+    fi
+
+    local paths
+    paths=$(collect_sync_paths "$CLAUDE_HOME_REPO")
+
+    if [ -z "$paths" ]; then
+        echo -e "${YELLOW}No syncable files found in claude-home/${NC}"
+        return 1
+    fi
+
+    # Backup files that differ
+    local backup_dir=""
+    local backed_up=0
+    while IFS= read -r relpath; do
+        if [ -f "$CLAUDE_HOME/$relpath" ] && ! diff -q "$CLAUDE_HOME/$relpath" "$CLAUDE_HOME_REPO/$relpath" > /dev/null 2>&1; then
+            if [ -z "$backup_dir" ]; then
+                backup_dir="$CLAUDE_HOME/.home-backup-$(date +%Y%m%d-%H%M%S)"
+                mkdir -p "$backup_dir"
+            fi
+            local dir
+            dir=$(dirname "$relpath")
+            mkdir -p "$backup_dir/$dir"
+            cp "$CLAUDE_HOME/$relpath" "$backup_dir/$relpath"
+            ((backed_up++))
+        fi
+    done <<< "$paths"
+
+    if [ $backed_up -gt 0 ]; then
+        echo -e "${YELLOW}Backed up $backed_up changed file(s) to $backup_dir${NC}"
+    fi
+
+    # Copy from repo to local
+    local count=0
+    while IFS= read -r relpath; do
+        local dir
+        dir=$(dirname "$relpath")
+        mkdir -p "$CLAUDE_HOME/$dir"
+        cp "$CLAUDE_HOME_REPO/$relpath" "$CLAUDE_HOME/$relpath"
+        echo -e "  ${GREEN}$relpath${NC}"
+        ((count++))
+    done <<< "$paths"
+
+    echo ""
+    echo "Pulled $count file(s) to $CLAUDE_HOME"
+}
+
+# Show diff between local and repo
+home_diff() {
+    local local_paths repo_paths all_paths
+    local_paths=$(collect_sync_paths "$CLAUDE_HOME")
+    repo_paths=$(collect_sync_paths "$CLAUDE_HOME_REPO" 2>/dev/null)
+    all_paths=$(echo -e "${local_paths}\n${repo_paths}" | sort -u | grep -v '^$')
+
+    if [ -z "$all_paths" ]; then
+        echo "No syncable files found on either side"
+        return
+    fi
+
+    local has_diff=false
+    while IFS= read -r relpath; do
+        local in_local=false in_repo=false
+        [ -f "$CLAUDE_HOME/$relpath" ] && in_local=true
+        [ -f "$CLAUDE_HOME_REPO/$relpath" ] && in_repo=true
+
+        if $in_local && ! $in_repo; then
+            echo -e "${GREEN}+ local only:  $relpath${NC}"
+            has_diff=true
+        elif ! $in_local && $in_repo; then
+            echo -e "${RED}- repo only:   $relpath${NC}"
+            has_diff=true
+        elif ! diff -q "$CLAUDE_HOME/$relpath" "$CLAUDE_HOME_REPO/$relpath" > /dev/null 2>&1; then
+            echo -e "${YELLOW}~ modified:    $relpath${NC}"
+            diff -u "$CLAUDE_HOME_REPO/$relpath" "$CLAUDE_HOME/$relpath" 2>/dev/null | head -20
+            echo ""
+            has_diff=true
+        fi
+    done <<< "$all_paths"
+
+    if ! $has_diff; then
+        echo -e "${GREEN}Everything in sync${NC}"
+    fi
+}
+
+# Quick status summary
+home_status() {
+    local local_paths repo_paths all_paths
+    local_paths=$(collect_sync_paths "$CLAUDE_HOME")
+    repo_paths=$(collect_sync_paths "$CLAUDE_HOME_REPO" 2>/dev/null)
+    all_paths=$(echo -e "${local_paths}\n${repo_paths}" | sort -u | grep -v '^$')
+
+    if [ -z "$all_paths" ]; then
+        echo "No syncable files found"
+        return
+    fi
+
+    local in_sync=0 modified=0 local_only=0 repo_only=0
+    while IFS= read -r relpath; do
+        local in_local=false in_repo=false
+        [ -f "$CLAUDE_HOME/$relpath" ] && in_local=true
+        [ -f "$CLAUDE_HOME_REPO/$relpath" ] && in_repo=true
+
+        if $in_local && ! $in_repo; then
+            ((local_only++))
+        elif ! $in_local && $in_repo; then
+            ((repo_only++))
+        elif ! diff -q "$CLAUDE_HOME/$relpath" "$CLAUDE_HOME_REPO/$relpath" > /dev/null 2>&1; then
+            ((modified++))
+        else
+            ((in_sync++))
+        fi
+    done <<< "$all_paths"
+
+    echo "Home config status:"
+    [ $in_sync -gt 0 ]    && echo -e "  ${GREEN}In sync:    $in_sync${NC}"
+    [ $modified -gt 0 ]   && echo -e "  ${YELLOW}Modified:   $modified${NC}"
+    [ $local_only -gt 0 ] && echo -e "  ${GREEN}Local only: $local_only${NC}"
+    [ $repo_only -gt 0 ]  && echo -e "  ${RED}Repo only:  $repo_only${NC}"
+
+    if [ $modified -eq 0 ] && [ $local_only -eq 0 ] && [ $repo_only -eq 0 ]; then
+        echo -e "  ${GREEN}Everything in sync${NC}"
     fi
 }
 
@@ -362,8 +599,17 @@ update_servers() {
     fi
     echo ""
 
-    # Step 2: Re-run install.sh to update bin scripts + aliases
-    echo "Step 2: Re-installing scripts and aliases..."
+    # Step 2: Pull home config if available
+    if [ -d "$CLAUDE_HOME_REPO" ]; then
+        echo "Step 2: Pulling home config..."
+        home_pull
+    else
+        echo "Step 2: No home config in repo (skipping)"
+    fi
+    echo ""
+
+    # Step 3: Re-run install.sh to update bin scripts + aliases
+    echo "Step 3: Re-installing scripts and aliases..."
     if [ -x "$REPO_DIR/install.sh" ]; then
         bash "$REPO_DIR/install.sh"
     else
@@ -371,13 +617,13 @@ update_servers() {
     fi
     echo ""
 
-    # Step 3: Remove chezmoi if present
-    echo "Step 3: Cleaning up legacy tools..."
+    # Step 4: Remove chezmoi if present
+    echo "Step 4: Cleaning up legacy tools..."
     remove_chezmoi
     echo ""
 
-    # Step 4: Update ALL projects' MCP configs from library
-    echo "Step 4: Updating MCP configs across all projects..."
+    # Step 5: Update ALL projects' MCP configs from library
+    echo "Step 5: Updating MCP configs across all projects..."
     if [ ! -f "$CONFIG_FILE" ]; then
         echo "No config file found, nothing to update"
     else
@@ -429,14 +675,14 @@ update_servers() {
     fi
     echo ""
 
-    # Step 5: Record machine version
-    echo "Step 5: Recording machine version..."
+    # Step 6: Record machine version
+    echo "Step 6: Recording machine version..."
     record_machine_version
     local hostname
     hostname=$(hostname)
     echo -e "${GREEN}Recorded $hostname at $(cd "$REPO_DIR" && git rev-parse --short HEAD 2>/dev/null)${NC}"
 
-    # Step 6: Commit + push .machines.json
+    # Step 7: Commit + push .machines.json
     if [ -d "$REPO_DIR/.git" ]; then
         cd "$REPO_DIR"
         if git diff --quiet "$MACHINES_FILE" 2>/dev/null && git diff --cached --quiet "$MACHINES_FILE" 2>/dev/null; then
@@ -671,6 +917,19 @@ case "$1" in
         ;;
     push)
         push_secrets
+        ;;
+    home)
+        shift
+        case "$1" in
+            push)   home_push ;;
+            pull)   home_pull ;;
+            diff)   home_diff ;;
+            status) home_status ;;
+            *)
+                echo "Usage: mcp-manager home [push|pull|diff|status]"
+                exit 1
+                ;;
+        esac
         ;;
     *)
         usage
