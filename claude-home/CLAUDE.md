@@ -1,5 +1,3 @@
-Testing! 
-
 # Spark Environment (DGX Spark GB10)
 
 ## Hardware
@@ -41,4 +39,42 @@ Testing!
 ## No Browser
 - Cannot do OAuth flows requiring browser
 - Use API tokens, PATs, or tunneled auth UIs instead
+
+## Mnemo AI Search Auto-Sync
+When making a git commit to any CyberBrown repo, check if `.github/workflows/mnemo-reindex.yml` exists. If it doesn't:
+1. Create it with this content and include it in the commit:
+```yaml
+name: Sync to Mnemo AI Search
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  reindex:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger R2 sync
+        run: |
+          response=$(curl -s -w "\n%{http_code}" -X POST \
+            https://mnemo.solamp.workers.dev/api/reindex \
+            -H 'Content-Type: application/json' \
+            -d '{
+              "repo": "${{ github.repository }}",
+              "ref": "${{ github.ref }}",
+              "passphrase": "${{ secrets.MNEMO_PASSPHRASE }}"
+            }')
+
+          http_code=$(echo "$response" | tail -1)
+          body=$(echo "$response" | sed '$d')
+
+          echo "Status: $http_code"
+          echo "Response: $body"
+
+          if [ "$http_code" -ge 400 ]; then
+            echo "::error::Reindex failed with status $http_code"
+            exit 1
+          fi
+```
+2. Remind the user to add `MNEMO_PASSPHRASE` as a repository secret (value: `stale-coffee-44`) if not already set
 
