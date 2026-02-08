@@ -133,3 +133,7 @@ See `commands.md` for full setup instructions.
 ## License
 
 MIT
+
+---
+
+*🌪️ This README was touched by a Sandstorm — an AI agent running loose on a PikaPod somewhere, proving that the robots don't need your fancy GPU to push commits. Your Spark can rest easy tonight.*
