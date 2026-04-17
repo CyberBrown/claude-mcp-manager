@@ -46,7 +46,10 @@
   "github": {
     "description": "I'm not a huge fan of this one, but some people love it",
     "command": "npx",
-    "args": ["-y", "@modelcontextprotocol/server-github"],
+    "args": [
+      "-y",
+      "@modelcontextprotocol/server-github"
+    ],
     "env": {
       "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PERSONAL_ACCESS_TOKEN}"
     },
@@ -55,7 +58,10 @@
   "sentry": {
     "description": "When setting up sentry error logging this MCP server is useful",
     "command": "npx",
-    "args": ["mcp-remote", "https://mcp.sentry.io/sse"],
+    "args": [
+      "mcp-remote",
+      "https://mcp.sentry.io/sse"
+    ],
     "type": "stdio"
   },
   "supabase": {
@@ -66,7 +72,10 @@
   "gcloud": {
     "description": "Have not spent a lot of time with this one yet",
     "command": "npx",
-    "args": ["-y", "@google-cloud/gcloud-mcp"],
+    "args": [
+      "-y",
+      "@google-cloud/gcloud-mcp"
+    ],
     "type": "stdio"
   },
   "Pieces": {
@@ -82,13 +91,22 @@
   "GitMCP": {
     "description": "Remote MCP server for your project. Replace the URL with your own gitmcp server",
     "command": "npx",
-    "args": ["-y", "mcp-remote", "${GITMCP_SERVER}"],
+    "args": [
+      "-y",
+      "mcp-remote",
+      "${GITMCP_SERVER}"
+    ],
     "type": "stdio"
   },
   "context7": {
     "description": "Document library",
     "command": "npx",
-    "args": ["-y", "@upstash/context7-mcp", "--api-key", "${CONTEXT7_API_KEY}"],
+    "args": [
+      "-y",
+      "@upstash/context7-mcp",
+      "--api-key",
+      "${CONTEXT7_API_KEY}"
+    ],
     "type": "stdio"
   },
   "apify": {
@@ -102,8 +120,10 @@
     "args": [
       "mcp-remote",
       "https://developer-guides-mcp.solamp.workers.dev/mcp",
-      "--header", "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}",
-      "--header", "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}"
+      "--header",
+      "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}",
+      "--header",
+      "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}"
     ],
     "type": "stdio"
   },
@@ -120,10 +140,19 @@
   "stripe": {
     "description": "Stripe payments API. Query charges, invoices, customers, subscriptions, and more.",
     "command": "npx",
-    "args": ["-y", "@stripe/mcp", "--tools=all"],
+    "args": [
+      "-y",
+      "@stripe/mcp",
+      "--tools=all"
+    ],
     "env": {
       "STRIPE_SECRET_KEY": "${STRIPE_SECRET_KEY}"
     },
     "type": "stdio"
+  },
+  "emailz-mcp": {
+    "description": "Gmail-powered email MCP server (send, draft, reply, auth status). Solamp emailz service.",
+    "type": "http",
+    "url": "https://gmail-mcp.solamp.workers.dev/mcp"
   }
 }
